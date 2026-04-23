@@ -5,15 +5,14 @@ from io import BytesIO
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="PG Matrix Pro", layout="wide")
 
-st.title("🎓 PG Academic Matrix: Multi-Sheet Edition")
-st.markdown("Generates a **Master Sheet** + **Individual Section Sheets** automatically.")
+st.title("🎓 PG Academic Matrix: Merged Header Edition")
+st.markdown("Generates a **Master Sheet** + **Sections** with merged subject headers.")
 
 # --- 1. FILE UPLOAD ---
 uploaded_file = st.file_uploader("Upload Raw Report", type=['csv', 'xlsx'])
 
 if uploaded_file is not None:
     try:
-        # Load File
         if uploaded_file.name.endswith('.csv'):
             raw = pd.read_csv(uploaded_file, header=None)
         else:
@@ -27,88 +26,106 @@ if uploaded_file is not None:
                 start_row = r + 1 
                 break
         
-        # Mapping: B=1, C=2, G=6, I=8, J=9, O=14, P=15
         cols = [1, 2, 6, 8, 9, 14, 15]
         df = raw.iloc[start_row:, cols].copy()
-        df.columns = ['Roll No', 'Student Name', 'Section', 'Course Name', 'Conducted', 'Attended', 'Percentage']
+        df.columns = ['Roll No', 'Student Name', 'Section', 'Course Name', 'Hrs Conducted', 'Hrs Attended', 'Att %']
 
         # --- 3. CLEANING ---
-        for c in ['Conducted', 'Attended', 'Percentage']:
+        for c in ['Hrs Conducted', 'Hrs Attended', 'Att %']:
             df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
         
         df['Section'] = df['Section'].astype(str).replace('nan', 'Unknown').str.strip()
         df['Course Name'] = df['Course Name'].astype(str).str.strip()
-        df = df.dropna(subset=['Roll No', 'Student Name'])
-        
-        # Sort by Roll No globally first
-        df = df.sort_values(by='Roll No')
+        df = df.dropna(subset=['Roll No', 'Student Name']).sort_values(by=['Section', 'Roll No'])
 
-        # --- 4. THE MATRIX LOGIC (Function for reuse) ---
+        # --- 4. MATRIX LOGIC ---
         def create_matrix(input_df):
             matrix = input_df.pivot_table(
                 index=['Roll No', 'Student Name', 'Section'],
                 columns='Course Name',
-                values=['Conducted', 'Attended', 'Percentage'],
+                values=['Hrs Conducted', 'Hrs Attended', 'Att %'],
                 aggfunc='first'
             )
+            # Course Name on TOP, Metrics BELOW
             matrix = matrix.reorder_levels([1, 0], axis=1).sort_index(axis=1)
-            metrics = ['Conducted', 'Attended', 'Percentage']
+            metrics = ['Hrs Conducted', 'Hrs Attended', 'Att %']
             matrix = matrix.reindex(columns=metrics, level=1)
             
             # Totals
             totals = input_df.groupby(['Roll No', 'Student Name', 'Section']).agg({
-                'Conducted': 'sum', 'Attended': 'sum', 'Percentage': 'mean'
+                'Hrs Conducted': 'sum', 'Hrs Attended': 'sum', 'Att %': 'mean'
             }).round(2)
             
-            matrix[('GRAND TOTAL', 'Total Conducted')] = totals['Conducted']
-            matrix[('GRAND TOTAL', 'Total Attended')] = totals['Attended']
-            matrix[('GRAND TOTAL', 'Average %')] = totals['Percentage']
+            matrix[('GRAND TOTAL', 'Total Conducted')] = totals['Hrs Conducted']
+            matrix[('GRAND TOTAL', 'Total Attended')] = totals['Hrs Attended']
+            matrix[('GRAND TOTAL', 'Average %')] = totals['Att %']
             
-            final = matrix.reset_index()
-            final.insert(0, 'Sl No.', range(1, len(final) + 1))
-            return final
+            return matrix
 
-        # --- 5. GENERATE REPORTS ---
         master_matrix = create_matrix(df)
-        
-        st.subheader("Master Report (All Sections)")
-        st.dataframe(master_matrix.fillna("-"), use_container_width=True)
+        st.subheader("Preview (Master Report)")
+        st.dataframe(master_matrix.reset_index().fillna("-"), use_container_width=True)
 
-        # --- 6. MULTI-SHEET EXCEL EXPORT ---
+        # --- 5. EXCEL EXPORT WITH ACTUAL CELL MERGING ---
         output = BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            # A. Save Master Sheet
-            # Flatten columns for Excel compatibility
-            master_export = master_matrix.copy()
-            master_export.columns = [f"{c[0]} | {c[1]}".strip(' | ') if isinstance(c, tuple) else c for c in master_export.columns]
-            master_export.to_excel(writer, index=False, sheet_name='MASTER_REPORT')
+            workbook = writer.book
+            
+            # Formats
+            header_fmt = workbook.add_format({
+                'bold': True, 'align': 'center', 'valign': 'vcenter',
+                'bg_color': '#FFCC99', 'border': 1
+            })
+            sub_header_fmt = workbook.add_format({
+                'bold': True, 'align': 'center', 'valign': 'vcenter',
+                'bg_color': '#C6E0B4', 'border': 1, 'text_wrap': True
+            })
 
-            # B. Save Individual Section Sheets
-            unique_sections = sorted(df['Section'].unique().tolist())
-            for section in unique_sections:
+            def write_sheet(matrix_data, sheet_name):
+                # We reset index to make Roll/Name/Section normal columns
+                flat_df = matrix_data.reset_index()
+                
+                # Write data starting from row 2 (to leave room for merged headers)
+                flat_df.to_excel(writer, sheet_name=sheet_name, startrow=2, index=False, header=False)
+                worksheet = writer.sheets[sheet_name]
+
+                # Write Static Headers (Sl No, Roll, Name, Section)
+                static_headers = ['Roll No', 'Student Name', 'Section']
+                for i, col_name in enumerate(static_headers):
+                    worksheet.merge_range(0, i, 1, i, col_name, header_fmt)
+                
+                # Write Merged Subject Headers
+                # matrix_data.columns contains (Course, Metric)
+                current_col = len(static_headers)
+                courses = matrix_data.columns.get_level_values(0).unique()
+                
+                for course in courses:
+                    # Merge across 3 columns (Conducted, Attended, %)
+                    worksheet.merge_range(0, current_col, 0, current_col + 2, course, header_fmt)
+                    
+                    # Write the 3 sub-headers
+                    sub_headers = ['No of Hours Conducted', 'No of Hours Attended', 'No of Attended Hours Percentage']
+                    for j, sub in enumerate(sub_headers):
+                        worksheet.write(1, current_col + j, sub, sub_header_fmt)
+                    
+                    current_col += 3
+
+            # Write Master and Section sheets
+            write_sheet(master_matrix, 'MASTER_REPORT')
+            for section in sorted(df['Section'].unique()):
                 section_df = df[df['Section'] == section]
                 if not section_df.empty:
-                    sect_matrix = create_matrix(section_df)
-                    # Flatten for Excel
-                    sect_matrix.columns = [f"{c[0]} | {c[1]}".strip(' | ') if isinstance(c, tuple) else c for c in sect_matrix.columns]
-                    # Clean sheet name (max 31 chars, no special chars)
-                    sheet_name = str(section)[:30].replace('/', '_')
-                    sect_matrix.to_excel(writer, index=False, sheet_name=sheet_name)
-
-            # Formatting
-            workbook = writer.book
-            header_format = workbook.add_format({'bold': True, 'bg_color': '#D7E4BC', 'border': 1})
-            for sheet in writer.sheets.values():
-                sheet.set_column(0, 50, 18)
+                    s_matrix = create_matrix(section_df)
+                    write_sheet(s_matrix, str(section)[:30].replace('/', '_'))
 
         st.download_button(
-            label="📥 Download Multi-Sheet Excel (Master + Sections)",
+            label="📥 Download Merged Excel Report",
             data=output.getvalue(),
-            file_name="Attendance_Matrix_Split_By_Section.xlsx",
+            file_name="Attendance_Merged_Matrix.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
     except Exception as e:
         st.error(f"Error: {e}")
 else:
-    st.info("Upload your raw file to generate the multi-sheet matrix.")
+    st.info("Upload file to generate the merged header report.")
