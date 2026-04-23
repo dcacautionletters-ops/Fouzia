@@ -7,7 +7,7 @@ from io import BytesIO
 st.set_page_config(page_title="PG Matrix Pro", layout="wide")
 
 st.title("🎓 PG Academic Matrix: Final Custom Edition")
-st.markdown("Mapping: **B, C, G, I, J, O, P** | **Free Slots Blacklisted**")
+st.markdown("Mapping: **B, C, G, I, J, O, P** | Sl No, Alignments & Shrinkage Active")
 
 # --- 1. FILE UPLOAD ---
 uploaded_file = st.file_uploader("Upload Raw Report", type=['csv', 'xlsx'])
@@ -31,22 +31,13 @@ if uploaded_file is not None:
         df = raw.iloc[start_row:, cols].copy()
         df.columns = ['Roll No', 'Student Name', 'Section', 'Course Name', 'Hrs Conducted', 'Hrs Attended', 'Att %']
 
-        # --- 3. CLEANING & BLACKLISTING ---
-        # Convert Course Name to string and handle the "Free Slot" blacklist
-        df['Course Name'] = df['Course Name'].astype(str).str.strip()
-        
-        # We create a mask for "Free Slot" (case insensitive, handles spaces or no spaces)
-        # This removes: freeslot, free slot, FREE SLOT, FreeSlot, etc.
-        blacklist_keywords = ['freeslot', 'free slot']
-        df = df[~df['Course Name'].str.lower().str.replace(' ', '').isin(['freeslot'])]
-        df = df[~df['Course Name'].str.lower().isin(blacklist_keywords)]
-
+        # --- 3. CLEANING ---
         for c in ['Hrs Conducted', 'Hrs Attended', 'Att %']:
             df[c] = pd.to_numeric(df[c], errors='coerce')
         
         df = df.replace([np.inf, -np.inf], np.nan).fillna(0)
         df['Section'] = df['Section'].astype(str).replace('nan', 'Unknown').str.strip()
-        
+        df['Course Name'] = df['Course Name'].astype(str).str.strip()
         df = df.dropna(subset=['Roll No', 'Student Name']).sort_values(by=['Section', 'Roll No'])
 
         # --- 4. MATRIX TRANSFORMATION ---
@@ -61,7 +52,6 @@ if uploaded_file is not None:
             metrics_order = ['Hrs Conducted', 'Hrs Attended', 'Att %']
             matrix = matrix.reindex(columns=metrics_order, level=1)
             
-            # Totals will now only include non-blacklisted subjects
             totals = input_df.groupby(['Roll No', 'Student Name', 'Section']).agg({
                 'Hrs Conducted': 'sum', 'Hrs Attended': 'sum', 'Att %': 'mean'
             }).round(2)
@@ -72,47 +62,51 @@ if uploaded_file is not None:
             return matrix.fillna(0)
 
         master_matrix = create_matrix(df)
-        st.subheader("Final Matrix Preview (Free Slots Removed)")
+        st.subheader("Final Matrix Preview")
         st.dataframe(master_matrix.reset_index().fillna("-"), use_container_width=True)
 
-        # --- 5. EXCEL EXPORT ---
+        # --- 5. EXCEL EXPORT (CUSTOM ALIGNMENT & BORDERS) ---
         output = BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter', engine_kwargs={'options': {'nan_inf_to_errors': True}}) as writer:
             workbook = writer.book
             
-            # Styles
+            # --- FORMATS ---
             header_fmt = workbook.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter', 'bg_color': '#FFCC99', 'border': 1, 'text_wrap': True})
             sub_header_fmt = workbook.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter', 'bg_color': '#C6E0B4', 'border': 1, 'text_wrap': True})
+            
+            # Left Align for Names
             left_data_fmt = workbook.add_format({'align': 'left', 'valign': 'vcenter', 'border': 1})
+            # Center Align for Numbers
             center_data_fmt = workbook.add_format({'align': 'center', 'valign': 'vcenter', 'border': 1})
 
             def write_custom_sheet(matrix_data, sheet_name):
+                # 1. Flatten Data and add Sl No
                 flat_df = matrix_data.reset_index()
                 flat_df.insert(0, 'Sl No.', range(1, len(flat_df) + 1))
+                
                 total_rows, total_cols = flat_df.shape
+                # Dummy columns to bypass pandas MultiIndex logic
                 flat_df.columns = [f"Col_{i}" for i in range(total_cols)]
                 
                 flat_df.to_excel(writer, sheet_name=sheet_name, startrow=2, index=False, header=False)
                 worksheet = writer.sheets[sheet_name]
 
+                # 2. Apply Formatting Row-by-Row
                 for r in range(total_rows):
                     for c in range(total_cols):
                         val = flat_df.iloc[r, c]
-                        if c == 3: # Student Name index (Sl No=0, Roll=1, Section=2, Name=3)
-                            # Wait, in the previous version Sl No=0, Roll=1, Name=2, Section=3
-                            # Let's check the reset_index() order: Roll No, Student Name, Section
-                            # After flat_df.insert(0, 'Sl No.'), it is:
-                            # 0: Sl No., 1: Roll No, 2: Student Name, 3: Section
+                        # Student Name is at index 2 (Sl No=0, Roll=1, Name=2)
+                        if c == 2:
                             worksheet.write(r + 2, c, val, left_data_fmt)
                         else:
                             worksheet.write(r + 2, c, val, center_data_fmt)
 
-                # Headers
+                # 3. Draw Headers
                 static = ['Sl No.', 'Roll No', 'Student Name', 'Section']
                 for i, text in enumerate(static):
                     worksheet.merge_range(0, i, 1, i, text, header_fmt)
 
-                curr_col = 4
+                curr_col = 4 # Starting after Section
                 subjects = matrix_data.columns.get_level_values(0).unique()
                 for sub in subjects:
                     worksheet.merge_range(0, curr_col, 0, curr_col + 2, sub, header_fmt)
@@ -121,12 +115,14 @@ if uploaded_file is not None:
                     worksheet.write(1, curr_col+2, "Att %", sub_header_fmt)
                     curr_col += 3
 
-                worksheet.set_column(0, 0, 6)
-                worksheet.set_column(1, 1, 15)
-                worksheet.set_column(2, 2, 35)
-                worksheet.set_column(3, 3, 12)
-                worksheet.set_column(4, curr_col, 10)
+                # 4. Shrink Column Widths
+                worksheet.set_column(0, 0, 6)   # Sl No
+                worksheet.set_column(1, 1, 15)  # Roll
+                worksheet.set_column(2, 2, 35)  # Name (Keep wide for visibility)
+                worksheet.set_column(3, 3, 12)  # Section
+                worksheet.set_column(4, curr_col, 10) # Metrics (Shrunken)
 
+            # Generate sheets
             write_custom_sheet(master_matrix, 'MASTER_REPORT')
             for section in sorted(df['Section'].unique()):
                 sect_df = df[df['Section'] == section]
@@ -134,12 +130,12 @@ if uploaded_file is not None:
                     write_custom_sheet(create_matrix(sect_df), str(section)[:30].replace('/', '_'))
 
         st.download_button(
-            label="📥 Download Final Report (Free Slots Removed)",
+            label="📥 Download Final Customized Report",
             data=output.getvalue(),
-            file_name="Attendance_Matrix_Cleaned.xlsx",
+            file_name="Final_Attendance_Matrix.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-        st.success("Free slots removed from all calculations!")
+        st.success("All alignments and Sl No. columns are ready! Enjoy your day Fouziya!")
 
     except Exception as e:
         st.error(f"Error: {e}")
