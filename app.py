@@ -86,13 +86,16 @@ if check_password():
                 metrics_order = ['Hrs Conducted', 'Hrs Attended', 'Att %']
                 matrix = matrix.reindex(columns=metrics_order, level=1)
                 
+                # --- FIXED CALCULATION LOGIC ---
                 totals = input_df.groupby(['Roll No', 'Student Name', 'Section']).agg({
-                    'Hrs Conducted': 'sum', 'Hrs Attended': 'sum', 'Att %': 'mean'
-                }).round(2)
+                    'Hrs Conducted': 'sum', 'Hrs Attended': 'sum'
+                })
+                # Correct way to get average: (Total Attended / Total Conducted) * 100
+                totals['Average %'] = (totals['Hrs Attended'] / totals['Hrs Conducted'] * 100).fillna(0).round(2)
                 
                 matrix[('GRAND TOTAL', 'Total Conducted')] = totals['Hrs Conducted']
                 matrix[('GRAND TOTAL', 'Total Attended')] = totals['Hrs Attended']
-                matrix[('GRAND TOTAL', 'Average %')] = totals['Att %']
+                matrix[('GRAND TOTAL', 'Average %')] = totals['Average %']
                 return matrix.fillna(0)
 
             master_matrix = create_matrix(df)
@@ -101,7 +104,7 @@ if check_password():
 
             # --- 5. EXCEL EXPORT (CUSTOM ALIGNMENT & BORDERS) ---
             output = BytesIO()
-            with pd.ExcelWriter(output, engine='xlsxwriter', engine_kwargs={'options': {'nan_inf_to_errors': True}}) as writer:
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                 workbook = writer.book
                 
                 # --- FORMATS ---
@@ -154,7 +157,7 @@ if check_password():
                     worksheet.set_column(1, 1, 15)  # Roll
                     worksheet.set_column(2, 2, 35)  # Name (Left Aligned)
                     worksheet.set_column(3, 3, 12)  # Section
-                    worksheet.set_column(4, curr_col, 10) # Subjects & Totals (Shrunken)
+                    worksheet.set_column(4, curr_col, 10) # Subjects & Totals
 
                 # Generate Master Sheet
                 write_custom_sheet(master_matrix, 'MASTER_REPORT')
