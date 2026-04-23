@@ -7,7 +7,7 @@ from io import BytesIO
 st.set_page_config(page_title="PG Matrix Pro", layout="wide")
 
 st.title("🎓 PG Academic Matrix: Final Custom Edition")
-st.markdown("Mapping: **B, C, G, I, J, O, P** | Sl No, Alignments & Shrinkage Active")
+st.markdown("Mapping: **B, C, G, I, J, O, P** | **Blacklisted: Free Slots**")
 
 # --- 1. FILE UPLOAD ---
 uploaded_file = st.file_uploader("Upload Raw Report", type=['csv', 'xlsx'])
@@ -31,13 +31,20 @@ if uploaded_file is not None:
         df = raw.iloc[start_row:, cols].copy()
         df.columns = ['Roll No', 'Student Name', 'Section', 'Course Name', 'Hrs Conducted', 'Hrs Attended', 'Att %']
 
-        # --- 3. CLEANING ---
+        # --- 3. CLEANING & BLACKLISTING FREE SLOTS ---
+        df['Course Name'] = df['Course Name'].astype(str).str.strip()
+        
+        # Remove any row where course name is "Free Slot" or "Freeslot" (case insensitive)
+        blacklist_keywords = ['freeslot', 'free slot']
+        df = df[~df['Course Name'].str.lower().str.replace(' ', '').isin(['freeslot'])]
+        df = df[~df['Course Name'].str.lower().isin(blacklist_keywords)]
+
         for c in ['Hrs Conducted', 'Hrs Attended', 'Att %']:
             df[c] = pd.to_numeric(df[c], errors='coerce')
         
+        # Replace Inf/NaN with 0 to prevent Excel crashes
         df = df.replace([np.inf, -np.inf], np.nan).fillna(0)
         df['Section'] = df['Section'].astype(str).replace('nan', 'Unknown').str.strip()
-        df['Course Name'] = df['Course Name'].astype(str).str.strip()
         df = df.dropna(subset=['Roll No', 'Student Name']).sort_values(by=['Section', 'Roll No'])
 
         # --- 4. MATRIX TRANSFORMATION ---
@@ -52,12 +59,13 @@ if uploaded_file is not None:
             metrics_order = ['Hrs Conducted', 'Hrs Attended', 'Att %']
             matrix = matrix.reindex(columns=metrics_order, level=1)
             
+            # Totals based only on non-blacklisted subjects
             totals = input_df.groupby(['Roll No', 'Student Name', 'Section']).agg({
                 'Hrs Conducted': 'sum', 'Hrs Attended': 'sum', 'Att %': 'mean'
             }).round(2)
             
             matrix[('GRAND TOTAL', 'Total Conducted')] = totals['Hrs Conducted']
-            matrix[('GRAND TOTAL', 'Total Attended')] = totals['Hrs Attended']
+            matrix[('GRAND TOTAL', 'Total Attended')] = totals['Att attended' if 'Att attended' in totals else 'Hrs Attended']
             matrix[('GRAND TOTAL', 'Average %')] = totals['Att %']
             return matrix.fillna(0)
 
@@ -118,7 +126,7 @@ if uploaded_file is not None:
                 # 4. Shrink Column Widths
                 worksheet.set_column(0, 0, 6)   # Sl No
                 worksheet.set_column(1, 1, 15)  # Roll
-                worksheet.set_column(2, 2, 35)  # Name (Keep wide for visibility)
+                worksheet.set_column(2, 2, 35)  # Name
                 worksheet.set_column(3, 3, 12)  # Section
                 worksheet.set_column(4, curr_col, 10) # Metrics (Shrunken)
 
@@ -135,7 +143,7 @@ if uploaded_file is not None:
             file_name="Final_Attendance_Matrix.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-        st.success("All alignments and Sl No. columns are ready! Enjoy your day Fouziya!")
+        st.success("Free slots removed and styles applied! Enjoy your day Fouziya!")
 
     except Exception as e:
         st.error(f"Error: {e}")
