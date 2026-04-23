@@ -6,8 +6,8 @@ from io import BytesIO
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="PG Matrix Pro", layout="wide")
 
-st.title("🎓 PG Academic Matrix: Universal Multi-Batch Edition")
-st.markdown("Handles **MCA, MBA, MFA** & more in one upload. **Borders, Sl No, & Blacklist** enabled.")
+st.title("🎓 PG Academic Matrix: Universal Edition")
+st.markdown("Mapping: **B, C, G, I, J, O, P** | **Left-Aligned Names & Blacklisted Free Slots**")
 
 # --- 1. FILE UPLOAD ---
 uploaded_file = st.file_uploader("Upload Consolidated or Separate Reports", type=['csv', 'xlsx'])
@@ -27,12 +27,11 @@ if uploaded_file is not None:
                 start_row = r + 1 
                 break
         
-        # Mapping: B, C, G, I, J, O, P
         cols = [1, 2, 6, 8, 9, 14, 15]
         df = raw.iloc[start_row:, cols].copy()
         df.columns = ['Roll No', 'Student Name', 'Section', 'Course Name', 'Hrs Conducted', 'Hrs Attended', 'Att %']
 
-        # --- 3. CLEANING & BLACKLISTING FREE SLOTS ---
+        # --- 3. CLEANING & BLACKLISTING ---
         df['Course Name'] = df['Course Name'].astype(str).str.strip()
         blacklist_keywords = ['freeslot', 'free slot']
         df = df[~df['Course Name'].str.lower().str.replace(' ', '').isin(['freeslot'])]
@@ -67,38 +66,46 @@ if uploaded_file is not None:
             return matrix.fillna(0)
 
         master_matrix = create_matrix(df)
-        st.subheader("Global Preview (All Departments)")
+        st.subheader("Global Preview (Consolidated)")
         st.dataframe(master_matrix.reset_index().fillna("-"), use_container_width=True)
 
-        # --- 5. EXCEL EXPORT ---
+        # --- 5. EXCEL EXPORT (CUSTOM ALIGNMENT & BORDERS) ---
         output = BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter', engine_kwargs={'options': {'nan_inf_to_errors': True}}) as writer:
             workbook = writer.book
             
-            # Formats
+            # --- FORMATS ---
             header_fmt = workbook.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter', 'bg_color': '#FFCC99', 'border': 1, 'text_wrap': True})
             sub_header_fmt = workbook.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter', 'bg_color': '#C6E0B4', 'border': 1, 'text_wrap': True})
+            
+            # Left Align for Names
             left_data_fmt = workbook.add_format({'align': 'left', 'valign': 'vcenter', 'border': 1})
+            # Center Align for Numbers
             center_data_fmt = workbook.add_format({'align': 'center', 'valign': 'vcenter', 'border': 1})
 
             def write_custom_sheet(matrix_data, sheet_name):
+                # Flatten and add Sl No
                 flat_df = matrix_data.reset_index()
                 flat_df.insert(0, 'Sl No.', range(1, len(flat_df) + 1))
+                
                 total_rows, total_cols = flat_df.shape
+                # Rename columns for flat export
                 flat_df.columns = [f"Col_{i}" for i in range(total_cols)]
                 
                 flat_df.to_excel(writer, sheet_name=sheet_name, startrow=2, index=False, header=False)
                 worksheet = writer.sheets[sheet_name]
 
+                # --- ROW-BY-ROW FORMATTING ---
                 for r in range(total_rows):
                     for c in range(total_cols):
                         val = flat_df.iloc[r, c]
-                        if c == 3: # Student Name index
+                        # 0: Sl No, 1: Roll No, 2: Student Name, 3: Section
+                        if c == 2: # Student Name is definitely at index 2
                             worksheet.write(r + 2, c, val, left_data_fmt)
                         else:
                             worksheet.write(r + 2, c, val, center_data_fmt)
 
-                # Headers
+                # --- DRAW HEADERS ---
                 static = ['Sl No.', 'Roll No', 'Student Name', 'Section']
                 for i, text in enumerate(static):
                     worksheet.merge_range(0, i, 1, i, text, header_fmt)
@@ -112,30 +119,31 @@ if uploaded_file is not None:
                     worksheet.write(1, curr_col+2, "Att %", sub_header_fmt)
                     curr_col += 3
 
-                worksheet.set_column(0, 0, 6)
-                worksheet.set_column(1, 1, 15)
-                worksheet.set_column(2, 2, 35)
-                worksheet.set_column(3, 3, 15)
-                worksheet.set_column(4, curr_col, 10)
+                # --- COLUMN WIDTHS ---
+                worksheet.set_column(0, 0, 6)   # Sl No
+                worksheet.set_column(1, 1, 15)  # Roll
+                worksheet.set_column(2, 2, 35)  # Name (Left Aligned)
+                worksheet.set_column(3, 3, 12)  # Section
+                worksheet.set_column(4, curr_col, 10) # Subjects & Totals (Shrunken)
 
-            # 1. Write the Master Sheet
+            # Generate Master Sheet
             write_custom_sheet(master_matrix, 'MASTER_REPORT')
             
-            # 2. Automatically detect and write individual Section sheets
+            # Automatically generate individual tabs for MCA, MBA, etc.
             for section in sorted(df['Section'].unique()):
                 sect_df = df[df['Section'] == section]
                 if not sect_df.empty:
                     write_custom_sheet(create_matrix(sect_df), str(section)[:31].replace('/', '_'))
 
         st.download_button(
-            label="📥 Download Universal Academic Report",
+            label="📥 Download Universal Report",
             data=output.getvalue(),
-            file_name="Universal_Attendance_Matrix.xlsx",
+            file_name="Final_Universal_Attendance.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-        st.success("Consolidated and Split sheets are ready, Ms. Fouziya!")
+        st.success("Everything is set! Left-aligned names and blacklisted free slots are active.")
 
     except Exception as e:
         st.error(f"Error: {e}")
 else:
-    st.info("Kindly upload the raw data")
+    st.info("Awaiting file upload...")
