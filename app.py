@@ -1,19 +1,19 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 from io import BytesIO
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="PG Matrix Pro", layout="wide")
 
 st.title("🎓 PG Academic Matrix: Professional Edition")
-st.markdown("Mapping: **B, C, G, I, J, O, P** | Status: **Borders & Merged Headers Active**")
+st.markdown("Mapping: **B, C, G, I, J, O, P** | Status: **NaN/Inf Fix Active**")
 
 # --- 1. FILE UPLOAD ---
 uploaded_file = st.file_uploader("Upload Raw Report", type=['csv', 'xlsx'])
 
 if uploaded_file is not None:
     try:
-        # Load File
         if uploaded_file.name.endswith('.csv'):
             raw = pd.read_csv(uploaded_file, header=None)
         else:
@@ -27,14 +27,16 @@ if uploaded_file is not None:
                 start_row = r + 1 
                 break
         
-        # Mapping: B=1, C=2, G=6, I=8, J=9, O=14, P=15
         cols = [1, 2, 6, 8, 9, 14, 15]
         df = raw.iloc[start_row:, cols].copy()
         df.columns = ['Roll No', 'Student Name', 'Section', 'Course Name', 'Hrs Conducted', 'Hrs Attended', 'Att %']
 
-        # --- 3. CLEANING ---
+        # --- 3. CLEANING & MATH FIXES ---
         for c in ['Hrs Conducted', 'Hrs Attended', 'Att %']:
-            df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
+            df[c] = pd.to_numeric(df[c], errors='coerce')
+        
+        # Replace Inf/NaN with 0 to prevent Excel crashes
+        df = df.replace([np.inf, -np.inf], np.nan).fillna(0)
         
         df['Section'] = df['Section'].astype(str).replace('nan', 'Unknown').str.strip()
         df['Course Name'] = df['Course Name'].astype(str).str.strip()
@@ -59,60 +61,49 @@ if uploaded_file is not None:
             matrix[('GRAND TOTAL', 'Total Conducted')] = totals['Hrs Conducted']
             matrix[('GRAND TOTAL', 'Total Attended')] = totals['Hrs Attended']
             matrix[('GRAND TOTAL', 'Average %')] = totals['Att %']
-            return matrix
+            
+            # Final sweep to ensure the Pivot doesn't introduce new NaNs
+            return matrix.fillna(0).replace([np.inf, -np.inf], 0)
 
         master_matrix = create_matrix(df)
         st.subheader("Preview (Master Data)")
         st.dataframe(master_matrix.reset_index().fillna("-"), use_container_width=True)
 
-        # --- 5. EXCEL EXPORT (The Bulletproof Fix with Borders) ---
+        # --- 5. EXCEL EXPORT (The "NaN/Inf Proof" Fix) ---
         output = BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        # Enable nan_inf_to_errors to prevent the workbook from crashing on bad math
+        with pd.ExcelWriter(output, engine='xlsxwriter', engine_kwargs={'options': {'nan_inf_to_errors': True}}) as writer:
             workbook = writer.book
             
-            # --- PROFESSIONAL FORMATS ---
-            # Header Style (Orange Merged Subjects)
-            header_fmt = workbook.add_format({
-                'bold': True, 'align': 'center', 'valign': 'vcenter', 
-                'bg_color': '#FFCC99', 'border': 1
-            })
-            # Sub-Header Style (Green Metrics)
-            sub_header_fmt = workbook.add_format({
-                'bold': True, 'align': 'center', 'valign': 'vcenter', 
-                'bg_color': '#C6E0B4', 'border': 1, 'text_wrap': True
-            })
-            # Data Style (Centered with Borders)
-            data_fmt = workbook.add_format({
-                'align': 'center', 'valign': 'vcenter', 'border': 1
-            })
+            header_fmt = workbook.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter', 'bg_color': '#FFCC99', 'border': 1})
+            sub_header_fmt = workbook.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter', 'bg_color': '#C6E0B4', 'border': 1, 'text_wrap': True})
+            data_fmt = workbook.add_format({'align': 'center', 'valign': 'vcenter', 'border': 1})
 
             def write_custom_sheet(matrix_data, sheet_name):
-                # Flatten the dataframe to avoid Pandas errors
                 data_only = matrix_data.reset_index()
-                total_rows = len(data_only)
-                total_cols = len(data_only.columns)
+                total_rows, total_cols = data_only.shape
                 
-                # Replace MultiIndex with dummy names for a flat export
+                # Use dummy column names to bypass Pandas MultiIndex logic
                 data_only.columns = [f"Col_{i}" for i in range(total_cols)]
                 
-                # Write data starting from Row 2, apply the border format to all data cells
                 data_only.to_excel(writer, sheet_name=sheet_name, startrow=2, index=False, header=False)
                 worksheet = writer.sheets[sheet_name]
 
-                # APPLY BORDERS TO DATA ROWS
-                # Range: Row 2 to Row (2 + total_rows), Col 0 to total_cols
+                # Apply Borders and write data
                 for r in range(total_rows):
                     for c in range(total_cols):
                         val = data_only.iloc[r, c]
-                        worksheet.write(r + 2, c, val, data_fmt)
+                        # Handle any remaining NaNs at the write level
+                        if pd.isna(val) or val == np.inf or val == -np.inf:
+                            worksheet.write(r + 2, c, 0, data_fmt)
+                        else:
+                            worksheet.write(r + 2, c, val, data_fmt)
 
-                # --- MANUALLY DRAW THE HEADERS (SAME AS BEFORE) ---
-                # Static Headers (Roll No, Name, Section)
+                # Draw Headers
                 static = ['Roll No', 'Student Name', 'Section']
                 for i, text in enumerate(static):
                     worksheet.merge_range(0, i, 1, i, text, header_fmt)
 
-                # Subject Headers
                 curr_col = 3
                 subjects = matrix_data.columns.get_level_values(0).unique()
                 for sub in subjects:
@@ -122,27 +113,24 @@ if uploaded_file is not None:
                     worksheet.write(1, curr_col+2, "Att %", sub_header_fmt)
                     curr_col += 3
 
-                # Final column formatting
-                worksheet.set_column(0, 0, 15) # Roll
-                worksheet.set_column(1, 1, 35) # Name
-                worksheet.set_column(2, 2, 12) # Section
-                worksheet.set_column(3, curr_col, 15) # Subjects
+                worksheet.set_column(0, 0, 15)
+                worksheet.set_column(1, 1, 35)
+                worksheet.set_column(2, 2, 12)
+                worksheet.set_column(3, curr_col, 15)
 
-            # Generate sheets
             write_custom_sheet(master_matrix, 'MASTER_REPORT')
             for section in sorted(df['Section'].unique()):
                 sect_df = df[df['Section'] == section]
                 if not sect_df.empty:
-                    s_matrix = create_matrix(sect_df)
-                    write_custom_sheet(s_matrix, str(section)[:30].replace('/', '_'))
+                    write_custom_sheet(create_matrix(sect_df), str(section)[:30].replace('/', '_'))
 
         st.download_button(
-            label="📥 Download Professional Bordered Report",
+            label="📥 Download Professional Report (Fixed)",
             data=output.getvalue(),
-            file_name="Attendance_Matrix_Pro_Borders.xlsx",
+            file_name="Attendance_Matrix_Pro.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-        st.success("Borders added successfully! Ready for printing, Ms. Fouziya Banu.")
+        st.success("Mathematical errors handled. Ready to go!")
 
     except Exception as e:
         st.error(f"Error: {e}")
