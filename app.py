@@ -141,4 +141,4 @@ if uploaded_file is not None:
     except Exception as e:
         st.error(f"Error: {e}")
 else:
-    st.info("Awaiting file upload...")
+    st.info("At your service Ms. Fouziya could you please upload your file to experience Magic!!")
