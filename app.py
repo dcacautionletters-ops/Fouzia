@@ -6,8 +6,8 @@ from io import BytesIO
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="PG Matrix Pro", layout="wide")
 
-st.title("🎓 PG Academic Matrix: Professional Edition")
-st.markdown("Mapping: **B, C, G, I, J, O, P** | Status: **NaN/Inf Fix Active**")
+st.title("🎓 PG Academic Matrix: Final Custom Edition")
+st.markdown("Mapping: **B, C, G, I, J, O, P** | Sl No, Alignments & Shrinkage Active")
 
 # --- 1. FILE UPLOAD ---
 uploaded_file = st.file_uploader("Upload Raw Report", type=['csv', 'xlsx'])
@@ -31,13 +31,11 @@ if uploaded_file is not None:
         df = raw.iloc[start_row:, cols].copy()
         df.columns = ['Roll No', 'Student Name', 'Section', 'Course Name', 'Hrs Conducted', 'Hrs Attended', 'Att %']
 
-        # --- 3. CLEANING & MATH FIXES ---
+        # --- 3. CLEANING ---
         for c in ['Hrs Conducted', 'Hrs Attended', 'Att %']:
             df[c] = pd.to_numeric(df[c], errors='coerce')
         
-        # Replace Inf/NaN with 0 to prevent Excel crashes
         df = df.replace([np.inf, -np.inf], np.nan).fillna(0)
-        
         df['Section'] = df['Section'].astype(str).replace('nan', 'Unknown').str.strip()
         df['Course Name'] = df['Course Name'].astype(str).str.strip()
         df = df.dropna(subset=['Roll No', 'Student Name']).sort_values(by=['Section', 'Roll No'])
@@ -61,63 +59,70 @@ if uploaded_file is not None:
             matrix[('GRAND TOTAL', 'Total Conducted')] = totals['Hrs Conducted']
             matrix[('GRAND TOTAL', 'Total Attended')] = totals['Hrs Attended']
             matrix[('GRAND TOTAL', 'Average %')] = totals['Att %']
-            
-            # Final sweep to ensure the Pivot doesn't introduce new NaNs
-            return matrix.fillna(0).replace([np.inf, -np.inf], 0)
+            return matrix.fillna(0)
 
         master_matrix = create_matrix(df)
-        st.subheader("Preview (Master Data)")
+        st.subheader("Final Matrix Preview")
         st.dataframe(master_matrix.reset_index().fillna("-"), use_container_width=True)
 
-        # --- 5. EXCEL EXPORT (The "NaN/Inf Proof" Fix) ---
+        # --- 5. EXCEL EXPORT (CUSTOM ALIGNMENT & BORDERS) ---
         output = BytesIO()
-        # Enable nan_inf_to_errors to prevent the workbook from crashing on bad math
         with pd.ExcelWriter(output, engine='xlsxwriter', engine_kwargs={'options': {'nan_inf_to_errors': True}}) as writer:
             workbook = writer.book
             
-            header_fmt = workbook.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter', 'bg_color': '#FFCC99', 'border': 1})
+            # --- FORMATS ---
+            header_fmt = workbook.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter', 'bg_color': '#FFCC99', 'border': 1, 'text_wrap': True})
             sub_header_fmt = workbook.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter', 'bg_color': '#C6E0B4', 'border': 1, 'text_wrap': True})
-            data_fmt = workbook.add_format({'align': 'center', 'valign': 'vcenter', 'border': 1})
+            
+            # Left Align for Names
+            left_data_fmt = workbook.add_format({'align': 'left', 'valign': 'vcenter', 'border': 1})
+            # Center Align for Numbers
+            center_data_fmt = workbook.add_format({'align': 'center', 'valign': 'vcenter', 'border': 1})
 
             def write_custom_sheet(matrix_data, sheet_name):
-                data_only = matrix_data.reset_index()
-                total_rows, total_cols = data_only.shape
+                # 1. Flatten Data and add Sl No
+                flat_df = matrix_data.reset_index()
+                flat_df.insert(0, 'Sl No.', range(1, len(flat_df) + 1))
                 
-                # Use dummy column names to bypass Pandas MultiIndex logic
-                data_only.columns = [f"Col_{i}" for i in range(total_cols)]
+                total_rows, total_cols = flat_df.shape
+                # Dummy columns to bypass pandas MultiIndex logic
+                flat_df.columns = [f"Col_{i}" for i in range(total_cols)]
                 
-                data_only.to_excel(writer, sheet_name=sheet_name, startrow=2, index=False, header=False)
+                flat_df.to_excel(writer, sheet_name=sheet_name, startrow=2, index=False, header=False)
                 worksheet = writer.sheets[sheet_name]
 
-                # Apply Borders and write data
+                # 2. Apply Formatting Row-by-Row
                 for r in range(total_rows):
                     for c in range(total_cols):
-                        val = data_only.iloc[r, c]
-                        # Handle any remaining NaNs at the write level
-                        if pd.isna(val) or val == np.inf or val == -np.inf:
-                            worksheet.write(r + 2, c, 0, data_fmt)
+                        val = flat_df.iloc[r, c]
+                        # Student Name is at index 2 (Sl No=0, Roll=1, Name=2)
+                        if c == 2:
+                            worksheet.write(r + 2, c, val, left_data_fmt)
                         else:
-                            worksheet.write(r + 2, c, val, data_fmt)
+                            worksheet.write(r + 2, c, val, center_data_fmt)
 
-                # Draw Headers
-                static = ['Roll No', 'Student Name', 'Section']
+                # 3. Draw Headers
+                static = ['Sl No.', 'Roll No', 'Student Name', 'Section']
                 for i, text in enumerate(static):
                     worksheet.merge_range(0, i, 1, i, text, header_fmt)
 
-                curr_col = 3
+                curr_col = 4 # Starting after Section
                 subjects = matrix_data.columns.get_level_values(0).unique()
                 for sub in subjects:
                     worksheet.merge_range(0, curr_col, 0, curr_col + 2, sub, header_fmt)
-                    worksheet.write(1, curr_col, "No of Hours Conducted", sub_header_fmt)
-                    worksheet.write(1, curr_col+1, "No of Hours Attended", sub_header_fmt)
+                    worksheet.write(1, curr_col, "Hrs Cond.", sub_header_fmt)
+                    worksheet.write(1, curr_col+1, "Hrs Attd.", sub_header_fmt)
                     worksheet.write(1, curr_col+2, "Att %", sub_header_fmt)
                     curr_col += 3
 
-                worksheet.set_column(0, 0, 15)
-                worksheet.set_column(1, 1, 35)
-                worksheet.set_column(2, 2, 12)
-                worksheet.set_column(3, curr_col, 15)
+                # 4. Shrink Column Widths
+                worksheet.set_column(0, 0, 6)   # Sl No
+                worksheet.set_column(1, 1, 15)  # Roll
+                worksheet.set_column(2, 2, 35)  # Name (Keep wide for visibility)
+                worksheet.set_column(3, 3, 12)  # Section
+                worksheet.set_column(4, curr_col, 10) # Metrics (Shrunken)
 
+            # Generate sheets
             write_custom_sheet(master_matrix, 'MASTER_REPORT')
             for section in sorted(df['Section'].unique()):
                 sect_df = df[df['Section'] == section]
@@ -125,12 +130,12 @@ if uploaded_file is not None:
                     write_custom_sheet(create_matrix(sect_df), str(section)[:30].replace('/', '_'))
 
         st.download_button(
-            label="📥 Download Professional Report (Fixed)",
+            label="📥 Download Final Customized Report",
             data=output.getvalue(),
-            file_name="Attendance_Matrix_Pro.xlsx",
+            file_name="Final_Attendance_Matrix.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-        st.success("Mathematical errors handled. Ready to go!")
+        st.success("All alignments and Sl No. columns are ready! Enjoy your day Fouziya!")
 
     except Exception as e:
         st.error(f"Error: {e}")
